@@ -1,11 +1,4 @@
-from tensorflow.keras import layers
-from tensorflow import keras
-import tensorflow as tf
-
-from sklearn.model_selection import train_test_split
-# from ast import literal_eval
-# import pandas as pd
-import numpy as np
+import os
 
 import kfp
 from kfp.v2 import dsl
@@ -63,16 +56,16 @@ def test(dataset: Input[Dataset]):
     print(df.head())
 
 @dsl.pipeline(
-    name='Multi-label classification for arxiv paper abstract',
+    name=os.environ.get('KFP_NAME', 'Multi-label classification for arxiv paper abstract'),
 #   pipeline_root='gs://my-pipeline-root/example-pipeline'
 )
 def arxiv_pipeline():
     dataset = data_preprocessing()
     test(dataset.output)
 
-compiler.Compiler(mode=kfp.dsl.PipelineExecutionMode.V2_COMPATIBLE).compile(pipeline_func=arxiv_pipeline, package_path='pipeline.yaml')
+compiler.Compiler(mode=kfp.dsl.PipelineExecutionMode.V2_COMPATIBLE).compile(pipeline_func=arxiv_pipeline, package_path=os.environ.get('KFP_ARTIFACT', 'pipeline.yaml'))
 
-client = kfp.Client(host='http://localhost:8080')
+client = kfp.Client(host=os.environ.get('KFP_SERVER', 'http://localhost:8080'))
 # run the pipeline in v2 compatibility mode
 client.create_run_from_pipeline_func(
     arxiv_pipeline,
