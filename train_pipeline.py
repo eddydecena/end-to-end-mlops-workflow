@@ -65,7 +65,7 @@ def arxiv_pipeline():
 
 compiler.Compiler(mode=kfp.dsl.PipelineExecutionMode.V2_COMPATIBLE).compile(pipeline_func=arxiv_pipeline, package_path=os.environ.get('KFP_ARTIFACT', 'pipeline.yaml'))
 
-client = kfp.Client(host=os.environ.get('KFP_SERVER', 'http://localhost:8080'))
+client = kfp.Client(host=os.environ.get('KFP_HOST', 'http://localhost:8080'))
 # run the pipeline in v2 compatibility mode
 client.create_run_from_pipeline_func(
     arxiv_pipeline,
