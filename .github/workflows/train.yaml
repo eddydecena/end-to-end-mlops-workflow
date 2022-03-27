@@ -1,4 +1,4 @@
-name: Python application
+name: Continues training
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
         pytest
 
   CT:
-    needs: ["build"]
+    needs: ["CI"]
     runs-on: ubuntu-latest
     steps:
     - id: 'auth'
