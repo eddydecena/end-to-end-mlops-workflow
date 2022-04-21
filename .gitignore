@@ -274,4 +274,6 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+pipeline.yaml
+
 # End of https://www.toptal.com/developers/gitignore/api/macos,windows,linux,python,venv,virtualenv,visualstudiocode,jupyternotebooks
