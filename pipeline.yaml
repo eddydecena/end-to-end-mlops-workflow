@@ -4,7 +4,7 @@ metadata:
   generateName: multi-label-classification-for-arxiv-paper-abstract-
   annotations:
     pipelines.kubeflow.org/kfp_sdk_version: 1.8.11
-    pipelines.kubeflow.org/pipeline_compilation_time: '2022-03-24T20:45:29.526817'
+    pipelines.kubeflow.org/pipeline_compilation_time: '2022-04-20T18:01:33.503699'
     pipelines.kubeflow.org/pipeline_spec: '{"inputs": [{"default": "", "name": "pipeline-root"},
       {"default": "pipeline/Multi-label classification for arxiv paper abstract",
       "name": "pipeline-name"}], "name": "Multi-label classification for arxiv paper
@@ -16,7 +16,24 @@ metadata:
 spec:
   entrypoint: multi-label-classification-for-arxiv-paper-abstract
   templates:
-  - name: data-preprocessing
+  - name: condition-validation-threshold-1
+    inputs:
+      parameters:
+      - {name: pipeline-name}
+      - {name: pipeline-root}
+      artifacts:
+      - {name: train-model}
+    dag:
+      tasks:
+      - name: deploy
+        template: deploy
+        arguments:
+          parameters:
+          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
+          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
+          artifacts:
+          - {name: train-model, from: '{{inputs.artifacts.train-model}}'}
+  - name: data-analysis
     container:
       args:
       - sh
@@ -41,15 +58,13 @@ spec:
         from kfp.v2.dsl import *
         from typing import *
 
-        def data_preprocessing(arxiv_data_filtered_output: Output[Dataset]):
-            from ast import literal_eval
+        def data_analysis(dataset: Input[Dataset]):
             import pandas as pd
 
-            arxiv_data = pd.read_csv(
-                "https://github.com/soumik12345/multi-label-text-classification/releases/download/v0.2/arxiv_data.csv"
-            )
-            arxiv_data.head()
+            arxiv_data = pd.read_csv(dataset.path, )
 
+            arxiv_data.head()
+            arxiv_data[:]
             print(f"There are {len(arxiv_data)} rows in the dataset.")
 
             total_duplicate_titles = sum(arxiv_data["titles"].duplicated())
@@ -58,31 +73,112 @@ spec:
             arxiv_data = arxiv_data[~arxiv_data["titles"].duplicated()]
             print(f"There are {len(arxiv_data)} rows in the deduplicated dataset.")
 
-            # There are some terms with occurrence as low as 1.
-            print('Number of terms with 1 occurence: ', sum(arxiv_data["terms"].value_counts() == 1))
+            print(sum(arxiv_data["terms"].value_counts() == 1))
 
-            # How many unique terms?
-            print('Unique terms: ', arxiv_data["terms"].nunique())
-
-            # Filtering the rare terms.
-            arxiv_data_filtered = arxiv_data.groupby("terms").filter(lambda x: len(x) > 1)
-            print('filtered: ', arxiv_data_filtered.shape)
-
-            # Convert the string labels to lists of strings
-            arxiv_data_filtered["terms"] = arxiv_data_filtered["terms"].apply(
-                lambda x: literal_eval(x)
-            )
-            print('Convert label to list of string: ', arxiv_data_filtered["terms"].values[:5])
-
-            arxiv_data_filtered.to_csv(arxiv_data_filtered_output.path, index=False, header=False)
+            print(arxiv_data["terms"].nunique())
 
       - --executor_input
       - '{{$}}'
       - --function_to_execute
-      - data_preprocessing
+      - data_analysis
       command: [/kfp-launcher/launch, --mlmd_server_address, $(METADATA_GRPC_SERVICE_HOST),
         --mlmd_server_port, $(METADATA_GRPC_SERVICE_PORT), --runtime_info_json, $(KFP_V2_RUNTIME_INFO),
-        --container_image, $(KFP_V2_IMAGE), --task_name, data-preprocessing, --pipeline_name,
+        --container_image, $(KFP_V2_IMAGE), --task_name, data-analysis, --pipeline_name,
+        '{{inputs.parameters.pipeline-name}}', --run_id, $(KFP_RUN_ID), --run_resource,
+        workflows.argoproj.io/$(WORKFLOW_ID), --namespace, $(KFP_NAMESPACE), --pod_name,
+        $(KFP_POD_NAME), --pod_uid, $(KFP_POD_UID), --pipeline_root, '{{inputs.parameters.pipeline-root}}',
+        --enable_caching, $(ENABLE_CACHING), --, --]
+      env:
+      - name: KFP_POD_NAME
+        valueFrom:
+          fieldRef: {fieldPath: metadata.name}
+      - name: KFP_POD_UID
+        valueFrom:
+          fieldRef: {fieldPath: metadata.uid}
+      - name: KFP_NAMESPACE
+        valueFrom:
+          fieldRef: {fieldPath: metadata.namespace}
+      - name: WORKFLOW_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''workflows.argoproj.io/workflow'']'}
+      - name: KFP_RUN_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipeline/runid'']'}
+      - name: ENABLE_CACHING
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipelines.kubeflow.org/enable_caching'']'}
+      - {name: KFP_V2_IMAGE, value: 'python:3.7'}
+      - {name: KFP_V2_RUNTIME_INFO, value: '{"inputParameters": {}, "inputArtifacts":
+          {"dataset": {"metadataPath": "/tmp/inputs/dataset/data", "schemaTitle":
+          "system.Dataset", "instanceSchema": "", "schemaVersion": "0.0.1"}}, "outputParameters":
+          {}, "outputArtifacts": {}}'}
+      envFrom:
+      - configMapRef: {name: metadata-grpc-configmap, optional: true}
+      image: python:3.7
+      volumeMounts:
+      - {mountPath: /kfp-launcher, name: kfp-launcher}
+    inputs:
+      parameters:
+      - {name: pipeline-name}
+      - {name: pipeline-root}
+      artifacts:
+      - {name: data-extraction-arxiv_data_filtered_output, path: /tmp/inputs/dataset/data}
+    metadata:
+      annotations:
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/component_ref: '{}'
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.11
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/enable_caching: "true"
+    initContainers:
+    - command: [launcher, --copy, /kfp-launcher/launch]
+      image: gcr.io/ml-pipeline/kfp-launcher:1.8.7
+      name: kfp-launcher
+      mirrorVolumeMounts: true
+    volumes:
+    - {name: kfp-launcher}
+  - name: data-extraction
+    container:
+      args:
+      - sh
+      - -c
+      - |2
+
+        if ! [ -x "$(command -v pip)" ]; then
+            python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+        fi
+
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'pandas==1.1.4' 'kfp==1.8.11' && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp -d)
+        printf "%s" "$0" > "$program_path/ephemeral_component.py"
+        python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+      - |2+
+
+        import kfp
+        from kfp.v2 import dsl
+        from kfp.v2.dsl import *
+        from typing import *
+
+        def data_extraction(arxiv_data_filtered_output: Output[Dataset]):
+            import pandas as pd
+            arxiv_data = pd.read_csv(
+                "https://github.com/soumik12345/multi-label-text-classification/releases/download/v0.2/arxiv_data.csv"
+            )
+            arxiv_data = arxiv_data[:10000]
+            arxiv_data.to_csv(arxiv_data_filtered_output.path, index=False, header=True)
+
+      - --executor_input
+      - '{{$}}'
+      - --function_to_execute
+      - data_extraction
+      command: [/kfp-launcher/launch, --mlmd_server_address, $(METADATA_GRPC_SERVICE_HOST),
+        --mlmd_server_port, $(METADATA_GRPC_SERVICE_PORT), --runtime_info_json, $(KFP_V2_RUNTIME_INFO),
+        --container_image, $(KFP_V2_IMAGE), --task_name, data-extraction, --pipeline_name,
         '{{inputs.parameters.pipeline-name}}', --run_id, $(KFP_RUN_ID), --run_resource,
         workflows.argoproj.io/$(WORKFLOW_ID), --namespace, $(KFP_NAMESPACE), --pod_name,
         $(KFP_POD_NAME), --pod_uid, $(KFP_POD_UID), --pipeline_root, '{{inputs.parameters.pipeline-root}}',
@@ -122,7 +218,256 @@ spec:
       - {name: pipeline-root}
     outputs:
       artifacts:
-      - {name: data-preprocessing-arxiv_data_filtered_output, path: /tmp/outputs/arxiv_data_filtered_output/data}
+      - {name: data-extraction-arxiv_data_filtered_output, path: /tmp/outputs/arxiv_data_filtered_output/data}
+    metadata:
+      annotations:
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/component_ref: '{}'
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.11
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/enable_caching: "true"
+    initContainers:
+    - command: [launcher, --copy, /kfp-launcher/launch]
+      image: gcr.io/ml-pipeline/kfp-launcher:1.8.7
+      name: kfp-launcher
+      mirrorVolumeMounts: true
+    volumes:
+    - {name: kfp-launcher}
+  - name: data-transformation
+    container:
+      args:
+      - sh
+      - -c
+      - |2
+
+        if ! [ -x "$(command -v pip)" ]; then
+            python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+        fi
+
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'pandas==1.1.4' 'scikit-learn==1.0.2' 'tensorflow-cpu==2.8.0' 'kfp==1.8.11' && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp -d)
+        printf "%s" "$0" > "$program_path/ephemeral_component.py"
+        python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+      - "\nimport kfp\nfrom kfp.v2 import dsl\nfrom kfp.v2.dsl import *\nfrom typing\
+        \ import *\n\ndef data_transformation(\n        dataset: Input[Dataset], \n\
+        \        train_dataset_output: Output[Dataset], \n        validation_dataset_output:\
+        \ Output[Dataset], \n        test_dataset_output: Output[Dataset]\n    ) ->\
+        \ NamedTuple(\n            'Datasets',\n            [('train_dataset_path',\
+        \ str),\n            ('validation_dataset_path', str), \n            ('test_dataset_path',\
+        \ str)]):\n\n    from ast import literal_eval\n    from collections import\
+        \ namedtuple\n    from sklearn.model_selection import train_test_split\n \
+        \   import tensorflow as tf\n    import numpy as np\n    import pandas as\
+        \ pd\n\n    arxiv_data = pd.read_csv(dataset.path)\n\n    arxiv_data_filtered\
+        \ = arxiv_data.groupby(\"terms\").filter(lambda x: len(x) > 1)\n    print(arxiv_data_filtered.shape)\n\
+        \n    arxiv_data_filtered[\"terms\"] = arxiv_data_filtered[\"terms\"].apply(\n\
+        \        lambda x: literal_eval(x)\n    )\n    arxiv_data_filtered[\"terms\"\
+        ].values[:5]\n\n    test_split = 0.1\n\n    # Initial train and test split.\n\
+        \    train_df, test_df = train_test_split(\n        arxiv_data_filtered,\n\
+        \        test_size=test_split,\n        stratify=arxiv_data_filtered[\"terms\"\
+        ].values,\n    )\n\n    # Splitting the test set further into validation\n\
+        \    # and new test sets.\n    val_df = test_df.sample(frac=0.5)\n    test_df.drop(val_df.index,\
+        \ inplace=True)\n\n    print(f\"Number of rows in training set: {len(train_df)}\"\
+        )\n    print(f\"Number of rows in validation set: {len(val_df)}\")\n    print(f\"\
+        Number of rows in test set: {len(test_df)}\")\n\n    terms = tf.ragged.constant(train_df[\"\
+        terms\"].values)\n    lookup = tf.keras.layers.StringLookup(output_mode=\"\
+        multi_hot\")\n    lookup.adapt(terms)\n    vocab = lookup.get_vocabulary()\n\
+        \    print('Lookup.get_vocabulary return type: ', type(vocab))\n\n\n    def\
+        \ invert_multi_hot(encoded_labels):\n        \"\"\"Reverse a single multi-hot\
+        \ encoded label to a tuple of vocab terms.\"\"\"\n        hot_indices = np.argwhere(encoded_labels\
+        \ == 1.0)[..., 0]\n        return np.take(vocab, hot_indices)\n\n    print(\"\
+        Vocabulary:\\n\")\n    print(vocab)\n\n    sample_label = train_df[\"terms\"\
+        ].iloc[0]\n    print(f\"Original label: {sample_label}\")\n\n    label_binarized\
+        \ = lookup([sample_label])\n    print(f\"Label-binarized representation: {label_binarized}\"\
+        )\n\n    train_df[\"summaries\"].apply(lambda x: len(x.split(\" \"))).describe()\n\
+        \n    max_seqlen = 150\n    batch_size = 128\n    padding_token = \"<pad>\"\
+        \n    auto = tf.data.AUTOTUNE\n\n    def make_dataset(dataframe, is_train=True):\n\
+        \        labels = tf.ragged.constant(dataframe[\"terms\"].values)\n      \
+        \  label_binarized = lookup(labels).numpy()\n        dataset = tf.data.Dataset.from_tensor_slices(\n\
+        \            (dataframe[\"summaries\"].values, label_binarized)\n        )\n\
+        \        dataset = dataset.shuffle(batch_size * 10) if is_train else dataset\n\
+        \        return dataset.batch(batch_size)\n\n    train_dataset = make_dataset(train_df,\
+        \ is_train=True)\n    validation_dataset = make_dataset(val_df, is_train=False)\n\
+        \    test_dataset = make_dataset(test_df, is_train=False)\n\n    text_batch,\
+        \ label_batch = next(iter(train_dataset))\n\n    for i, text in enumerate(text_batch[:5]):\n\
+        \        label = label_batch[i].numpy()[None, ...]\n        print(f\"Abstract:\
+        \ {text}\")\n        print(f\"Label(s): {invert_multi_hot(label[0])}\")\n\
+        \        print(\" \")\n\n    vocabulary = set()\n    train_df[\"summaries\"\
+        ].str.lower().str.split().apply(vocabulary.update)\n    vocabulary_size =\
+        \ len(vocabulary)\n    print(vocabulary_size)\n\n    text_vectorizer = tf.keras.layers.TextVectorization(\n\
+        \        max_tokens=vocabulary_size, ngrams=2, output_mode=\"tf_idf\"\n  \
+        \  )\n\n    # `TextVectorization` layer needs to be adapted as per the vocabulary\
+        \ from our\n    # training set.\n    with tf.device(\"/CPU:0\"):\n       \
+        \ text_vectorizer.adapt(train_dataset.map(lambda text, label: text))\n\n \
+        \   train_dataset = train_dataset.map(\n        lambda text, label: (text_vectorizer(text),\
+        \ label), num_parallel_calls=auto\n    ).prefetch(auto)\n    validation_dataset\
+        \ = validation_dataset.map(\n        lambda text, label: (text_vectorizer(text),\
+        \ label), num_parallel_calls=auto\n    ).prefetch(auto)\n    test_dataset\
+        \ = test_dataset.map(\n        lambda text, label: (text_vectorizer(text),\
+        \ label), num_parallel_calls=auto\n    ).prefetch(auto)\n\n    # save dataset\n\
+        \    tf.data.experimental.save(train_dataset, train_dataset_output.path)\n\
+        \    tf.data.experimental.save(validation_dataset, validation_dataset_output.path)\n\
+        \    tf.data.experimental.save(test_dataset, test_dataset_output.path)\n\n\
+        \    datasets = namedtuple('Datasets', ['train_dataset_path', 'validation_dataset_path',\
+        \ 'test_dataset_path'])\n    return datasets(\n        train_dataset_path=train_dataset_output.path,\n\
+        \        validation_dataset_path=validation_dataset_output.path,\n       \
+        \ test_dataset_path=test_dataset_output.path\n    )\n\n"
+      - --executor_input
+      - '{{$}}'
+      - --function_to_execute
+      - data_transformation
+      command: [/kfp-launcher/launch, --mlmd_server_address, $(METADATA_GRPC_SERVICE_HOST),
+        --mlmd_server_port, $(METADATA_GRPC_SERVICE_PORT), --runtime_info_json, $(KFP_V2_RUNTIME_INFO),
+        --container_image, $(KFP_V2_IMAGE), --task_name, data-transformation, --pipeline_name,
+        '{{inputs.parameters.pipeline-name}}', --run_id, $(KFP_RUN_ID), --run_resource,
+        workflows.argoproj.io/$(WORKFLOW_ID), --namespace, $(KFP_NAMESPACE), --pod_name,
+        $(KFP_POD_NAME), --pod_uid, $(KFP_POD_UID), --pipeline_root, '{{inputs.parameters.pipeline-root}}',
+        --enable_caching, $(ENABLE_CACHING), --, --]
+      env:
+      - name: KFP_POD_NAME
+        valueFrom:
+          fieldRef: {fieldPath: metadata.name}
+      - name: KFP_POD_UID
+        valueFrom:
+          fieldRef: {fieldPath: metadata.uid}
+      - name: KFP_NAMESPACE
+        valueFrom:
+          fieldRef: {fieldPath: metadata.namespace}
+      - name: WORKFLOW_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''workflows.argoproj.io/workflow'']'}
+      - name: KFP_RUN_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipeline/runid'']'}
+      - name: ENABLE_CACHING
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipelines.kubeflow.org/enable_caching'']'}
+      - {name: KFP_V2_IMAGE, value: 'python:3.7'}
+      - {name: KFP_V2_RUNTIME_INFO, value: '{"inputParameters": {}, "inputArtifacts":
+          {"dataset": {"metadataPath": "/tmp/inputs/dataset/data", "schemaTitle":
+          "system.Dataset", "instanceSchema": "", "schemaVersion": "0.0.1"}}, "outputParameters":
+          {"test_dataset_path": {"type": "STRING", "path": "/tmp/outputs/test_dataset_path/data"},
+          "train_dataset_path": {"type": "STRING", "path": "/tmp/outputs/train_dataset_path/data"},
+          "validation_dataset_path": {"type": "STRING", "path": "/tmp/outputs/validation_dataset_path/data"}},
+          "outputArtifacts": {"test_dataset_output": {"schemaTitle": "system.Dataset",
+          "instanceSchema": "", "schemaVersion": "0.0.1", "metadataPath": "/tmp/outputs/test_dataset_output/data"},
+          "train_dataset_output": {"schemaTitle": "system.Dataset", "instanceSchema":
+          "", "schemaVersion": "0.0.1", "metadataPath": "/tmp/outputs/train_dataset_output/data"},
+          "validation_dataset_output": {"schemaTitle": "system.Dataset", "instanceSchema":
+          "", "schemaVersion": "0.0.1", "metadataPath": "/tmp/outputs/validation_dataset_output/data"}}}'}
+      envFrom:
+      - configMapRef: {name: metadata-grpc-configmap, optional: true}
+      image: python:3.7
+      volumeMounts:
+      - {mountPath: /kfp-launcher, name: kfp-launcher}
+    inputs:
+      parameters:
+      - {name: pipeline-name}
+      - {name: pipeline-root}
+      artifacts:
+      - {name: data-extraction-arxiv_data_filtered_output, path: /tmp/inputs/dataset/data}
+    outputs:
+      artifacts:
+      - {name: data-transformation-test_dataset_output, path: /tmp/outputs/test_dataset_output/data}
+      - {name: data-transformation-test_dataset_path, path: /tmp/outputs/test_dataset_path/data}
+      - {name: data-transformation-train_dataset_output, path: /tmp/outputs/train_dataset_output/data}
+      - {name: data-transformation-train_dataset_path, path: /tmp/outputs/train_dataset_path/data}
+      - {name: data-transformation-validation_dataset_output, path: /tmp/outputs/validation_dataset_output/data}
+      - {name: data-transformation-validation_dataset_path, path: /tmp/outputs/validation_dataset_path/data}
+    metadata:
+      annotations:
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/component_ref: '{}'
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.11
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/enable_caching: "true"
+    initContainers:
+    - command: [launcher, --copy, /kfp-launcher/launch]
+      image: gcr.io/ml-pipeline/kfp-launcher:1.8.7
+      name: kfp-launcher
+      mirrorVolumeMounts: true
+    volumes:
+    - {name: kfp-launcher}
+  - name: deploy
+    container:
+      args:
+      - sh
+      - -c
+      - |2
+
+        if ! [ -x "$(command -v pip)" ]; then
+            python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+        fi
+
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'kfp==1.8.11' && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp -d)
+        printf "%s" "$0" > "$program_path/ephemeral_component.py"
+        python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+      - |2+
+
+        import kfp
+        from kfp.v2 import dsl
+        from kfp.v2.dsl import *
+        from typing import *
+
+        def deploy(model: Input[Model]) -> None:
+            print('deploying models...')
+
+      - --executor_input
+      - '{{$}}'
+      - --function_to_execute
+      - deploy
+      command: [/kfp-launcher/launch, --mlmd_server_address, $(METADATA_GRPC_SERVICE_HOST),
+        --mlmd_server_port, $(METADATA_GRPC_SERVICE_PORT), --runtime_info_json, $(KFP_V2_RUNTIME_INFO),
+        --container_image, $(KFP_V2_IMAGE), --task_name, deploy, --pipeline_name,
+        '{{inputs.parameters.pipeline-name}}', --run_id, $(KFP_RUN_ID), --run_resource,
+        workflows.argoproj.io/$(WORKFLOW_ID), --namespace, $(KFP_NAMESPACE), --pod_name,
+        $(KFP_POD_NAME), --pod_uid, $(KFP_POD_UID), --pipeline_root, '{{inputs.parameters.pipeline-root}}',
+        --enable_caching, $(ENABLE_CACHING), --, --]
+      env:
+      - name: KFP_POD_NAME
+        valueFrom:
+          fieldRef: {fieldPath: metadata.name}
+      - name: KFP_POD_UID
+        valueFrom:
+          fieldRef: {fieldPath: metadata.uid}
+      - name: KFP_NAMESPACE
+        valueFrom:
+          fieldRef: {fieldPath: metadata.namespace}
+      - name: WORKFLOW_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''workflows.argoproj.io/workflow'']'}
+      - name: KFP_RUN_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipeline/runid'']'}
+      - name: ENABLE_CACHING
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipelines.kubeflow.org/enable_caching'']'}
+      - {name: KFP_V2_IMAGE, value: 'python:3.7'}
+      - {name: KFP_V2_RUNTIME_INFO, value: '{"inputParameters": {}, "inputArtifacts":
+          {"model": {"metadataPath": "/tmp/inputs/model/data", "schemaTitle": "system.Model",
+          "instanceSchema": "", "schemaVersion": "0.0.1"}}, "outputParameters": {},
+          "outputArtifacts": {}}'}
+      envFrom:
+      - configMapRef: {name: metadata-grpc-configmap, optional: true}
+      image: python:3.7
+      volumeMounts:
+      - {mountPath: /kfp-launcher, name: kfp-launcher}
+    inputs:
+      parameters:
+      - {name: pipeline-name}
+      - {name: pipeline-root}
+      artifacts:
+      - {name: train-model, path: /tmp/inputs/model/data}
     metadata:
       annotations:
         pipelines.kubeflow.org/v2_component: "true"
@@ -146,22 +491,63 @@ spec:
       - {name: pipeline-root}
     dag:
       tasks:
-      - name: data-preprocessing
-        template: data-preprocessing
-        arguments:
-          parameters:
-          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
-          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
-      - name: test
-        template: test
-        dependencies: [data-preprocessing]
+      - name: condition-validation-threshold-1
+        template: condition-validation-threshold-1
+        when: '"{{tasks.validation.outputs.parameters.validation-Output}}" == "true"'
+        dependencies: [train, validation]
         arguments:
           parameters:
           - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
           - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
           artifacts:
-          - {name: data-preprocessing-arxiv_data_filtered_output, from: '{{tasks.data-preprocessing.outputs.artifacts.data-preprocessing-arxiv_data_filtered_output}}'}
-  - name: test
+          - {name: train-model, from: '{{tasks.train.outputs.artifacts.train-model}}'}
+      - name: data-analysis
+        template: data-analysis
+        dependencies: [data-extraction]
+        arguments:
+          parameters:
+          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
+          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
+          artifacts:
+          - {name: data-extraction-arxiv_data_filtered_output, from: '{{tasks.data-extraction.outputs.artifacts.data-extraction-arxiv_data_filtered_output}}'}
+      - name: data-extraction
+        template: data-extraction
+        arguments:
+          parameters:
+          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
+          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
+      - name: data-transformation
+        template: data-transformation
+        dependencies: [data-extraction]
+        arguments:
+          parameters:
+          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
+          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
+          artifacts:
+          - {name: data-extraction-arxiv_data_filtered_output, from: '{{tasks.data-extraction.outputs.artifacts.data-extraction-arxiv_data_filtered_output}}'}
+      - name: train
+        template: train
+        dependencies: [data-extraction, data-transformation]
+        arguments:
+          parameters:
+          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
+          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
+          artifacts:
+          - {name: data-extraction-arxiv_data_filtered_output, from: '{{tasks.data-extraction.outputs.artifacts.data-extraction-arxiv_data_filtered_output}}'}
+          - {name: data-transformation-test_dataset_output, from: '{{tasks.data-transformation.outputs.artifacts.data-transformation-test_dataset_output}}'}
+          - {name: data-transformation-train_dataset_output, from: '{{tasks.data-transformation.outputs.artifacts.data-transformation-train_dataset_output}}'}
+          - {name: data-transformation-validation_dataset_output, from: '{{tasks.data-transformation.outputs.artifacts.data-transformation-validation_dataset_output}}'}
+      - name: validation
+        template: validation
+        dependencies: [data-transformation, train]
+        arguments:
+          parameters:
+          - {name: pipeline-name, value: '{{inputs.parameters.pipeline-name}}'}
+          - {name: pipeline-root, value: '{{inputs.parameters.pipeline-root}}'}
+          artifacts:
+          - {name: data-transformation-test_dataset_output, from: '{{tasks.data-transformation.outputs.artifacts.data-transformation-test_dataset_output}}'}
+          - {name: train-model, from: '{{tasks.train.outputs.artifacts.train-model}}'}
+  - name: train
     container:
       args:
       - sh
@@ -172,32 +558,54 @@ spec:
             python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
         fi
 
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'pandas==1.1.4' 'kfp==1.8.11' && "$0" "$@"
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'pandas==1.1.4' 'scikit-learn==1.0.2' 'tensorflow-cpu==2.8.0' 'kfp==1.8.11' && "$0" "$@"
       - sh
       - -ec
       - |
         program_path=$(mktemp -d)
         printf "%s" "$0" > "$program_path/ephemeral_component.py"
         python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
-      - |2+
-
-        import kfp
-        from kfp.v2 import dsl
-        from kfp.v2.dsl import *
-        from typing import *
-
-        def test(dataset: Input[Dataset]):
-            import pandas as pd
-            df = pd.read_csv(dataset.path)
-            print(df.head())
-
+      - "\nimport kfp\nfrom kfp.v2 import dsl\nfrom kfp.v2.dsl import *\nfrom typing\
+        \ import *\n\ndef train(raw_dataset: Input[Dataset], \n    train_dataset_output:\
+        \ Input[Artifact], \n    validation_dataset_output: Input[Artifact], \n  \
+        \  test_dataset_output: Input[Artifact], \n    model: Output[Model]):\n  \
+        \  import tensorflow as tf\n    from tensorflow.keras import layers\n    from\
+        \ tensorflow import keras\n    import tensorflow as tf\n    from ast import\
+        \ literal_eval\n    from sklearn.model_selection import train_test_split\n\
+        \    import pandas as pd\n\n    arxiv_data = pd.read_csv(raw_dataset.path)\n\
+        \n    arxiv_data_filtered = arxiv_data.groupby(\"terms\").filter(lambda x:\
+        \ len(x) > 1)\n    print(arxiv_data_filtered.shape)\n\n    arxiv_data_filtered[\"\
+        terms\"] = arxiv_data_filtered[\"terms\"].apply(\n        lambda x: literal_eval(x)\n\
+        \    )\n    arxiv_data_filtered[\"terms\"].values[:5]\n\n    test_split =\
+        \ 0.1\n\n    # Initial train and test split.\n    train_df, test_df = train_test_split(\n\
+        \        arxiv_data_filtered,\n        test_size=test_split,\n        stratify=arxiv_data_filtered[\"\
+        terms\"].values,\n    )\n\n    # Splitting the test set further into validation\n\
+        \    # and new test sets.\n    val_df = test_df.sample(frac=0.5)\n    test_df.drop(val_df.index,\
+        \ inplace=True)\n\n    print(f\"Number of rows in training set: {len(train_df)}\"\
+        )\n    print(f\"Number of rows in validation set: {len(val_df)}\")\n    print(f\"\
+        Number of rows in test set: {len(test_df)}\")\n\n    # optimize lookup\n \
+        \   terms = tf.ragged.constant(train_df[\"terms\"].values)\n    lookup = tf.keras.layers.StringLookup(output_mode=\"\
+        multi_hot\")\n    lookup.adapt(terms)\n    vocab = lookup.get_vocabulary()\n\
+        \    print('Lookup.get_vocabulary return type: ', type(vocab))\n\n    # ready\
+        \ dataset\n    train_dataset = tf.data.experimental.load(train_dataset_output.path)\n\
+        \    validation_dataset = tf.data.experimental.load(validation_dataset_output.path)\n\
+        \    test_dataset = tf.data.experimental.load(test_dataset_output.path)\n\n\
+        \    def make_model():\n        shallow_mlp_model = keras.Sequential(\n  \
+        \          [\n                layers.Dense(512, activation=\"relu\"),\n  \
+        \              layers.Dense(256, activation=\"relu\"),\n                layers.Dense(lookup.vocabulary_size(),\
+        \ activation=\"sigmoid\"),\n            ]\n        )\n        return shallow_mlp_model\n\
+        \n    epochs = 20\n\n    shallow_mlp_model = make_model()\n    shallow_mlp_model.compile(\n\
+        \        loss=\"binary_crossentropy\", optimizer=\"adam\", metrics=[\"categorical_accuracy\"\
+        ]\n    )\n\n    history = shallow_mlp_model.fit(\n        train_dataset, validation_data=validation_dataset,\
+        \ epochs=epochs\n    )\n\n    shallow_mlp_model.save(model.path)\n\n    print(history)\n\
+        \n"
       - --executor_input
       - '{{$}}'
       - --function_to_execute
-      - test
+      - train
       command: [/kfp-launcher/launch, --mlmd_server_address, $(METADATA_GRPC_SERVICE_HOST),
         --mlmd_server_port, $(METADATA_GRPC_SERVICE_PORT), --runtime_info_json, $(KFP_V2_RUNTIME_INFO),
-        --container_image, $(KFP_V2_IMAGE), --task_name, test, --pipeline_name, '{{inputs.parameters.pipeline-name}}',
+        --container_image, $(KFP_V2_IMAGE), --task_name, train, --pipeline_name, '{{inputs.parameters.pipeline-name}}',
         --run_id, $(KFP_RUN_ID), --run_resource, workflows.argoproj.io/$(WORKFLOW_ID),
         --namespace, $(KFP_NAMESPACE), --pod_name, $(KFP_POD_NAME), --pod_uid, $(KFP_POD_UID),
         --pipeline_root, '{{inputs.parameters.pipeline-root}}', --enable_caching,
@@ -223,9 +631,16 @@ spec:
           fieldRef: {fieldPath: 'metadata.labels[''pipelines.kubeflow.org/enable_caching'']'}
       - {name: KFP_V2_IMAGE, value: 'python:3.7'}
       - {name: KFP_V2_RUNTIME_INFO, value: '{"inputParameters": {}, "inputArtifacts":
-          {"dataset": {"metadataPath": "/tmp/inputs/dataset/data", "schemaTitle":
-          "system.Dataset", "instanceSchema": "", "schemaVersion": "0.0.1"}}, "outputParameters":
-          {}, "outputArtifacts": {}}'}
+          {"raw_dataset": {"metadataPath": "/tmp/inputs/raw_dataset/data", "schemaTitle":
+          "system.Dataset", "instanceSchema": "", "schemaVersion": "0.0.1"}, "test_dataset_output":
+          {"metadataPath": "/tmp/inputs/test_dataset_output/data", "schemaTitle":
+          "system.Artifact", "instanceSchema": "", "schemaVersion": "0.0.1"}, "train_dataset_output":
+          {"metadataPath": "/tmp/inputs/train_dataset_output/data", "schemaTitle":
+          "system.Artifact", "instanceSchema": "", "schemaVersion": "0.0.1"}, "validation_dataset_output":
+          {"metadataPath": "/tmp/inputs/validation_dataset_output/data", "schemaTitle":
+          "system.Artifact", "instanceSchema": "", "schemaVersion": "0.0.1"}}, "outputParameters":
+          {}, "outputArtifacts": {"model": {"schemaTitle": "system.Model", "instanceSchema":
+          "", "schemaVersion": "0.0.1", "metadataPath": "/tmp/outputs/model/data"}}}'}
       envFrom:
       - configMapRef: {name: metadata-grpc-configmap, optional: true}
       image: python:3.7
@@ -236,7 +651,122 @@ spec:
       - {name: pipeline-name}
       - {name: pipeline-root}
       artifacts:
-      - {name: data-preprocessing-arxiv_data_filtered_output, path: /tmp/inputs/dataset/data}
+      - {name: data-extraction-arxiv_data_filtered_output, path: /tmp/inputs/raw_dataset/data}
+      - {name: data-transformation-test_dataset_output, path: /tmp/inputs/test_dataset_output/data}
+      - {name: data-transformation-train_dataset_output, path: /tmp/inputs/train_dataset_output/data}
+      - {name: data-transformation-validation_dataset_output, path: /tmp/inputs/validation_dataset_output/data}
+    outputs:
+      artifacts:
+      - {name: train-model, path: /tmp/outputs/model/data}
+    metadata:
+      annotations:
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/component_ref: '{}'
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.11
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/v2_component: "true"
+        pipelines.kubeflow.org/enable_caching: "true"
+    initContainers:
+    - command: [launcher, --copy, /kfp-launcher/launch]
+      image: gcr.io/ml-pipeline/kfp-launcher:1.8.7
+      name: kfp-launcher
+      mirrorVolumeMounts: true
+    volumes:
+    - {name: kfp-launcher}
+  - name: validation
+    container:
+      args:
+      - sh
+      - -c
+      - |2
+
+        if ! [ -x "$(command -v pip)" ]; then
+            python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+        fi
+
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'tensorflow-cpu==2.8.0' 'kfp==1.8.11' && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp -d)
+        printf "%s" "$0" > "$program_path/ephemeral_component.py"
+        python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+      - |2+
+
+        import kfp
+        from kfp.v2 import dsl
+        from kfp.v2.dsl import *
+        from typing import *
+
+        def validation(test_dataset_input: Input[Dataset], model_input: Input[Model]) -> bool:
+            import tensorflow as tf
+
+            test_dataset = tf.data.experimental.load(test_dataset_input.path)
+            model = tf.keras.models.load_model(model_input.path)
+            _, categorical_acc = model.evaluate(test_dataset)
+            print(f"Categorical accuracy on the test set: {round(categorical_acc * 100, 2)}%.")
+            if round(categorical_acc * 100, 2) > 70:
+                return True
+
+            return False
+
+      - --executor_input
+      - '{{$}}'
+      - --function_to_execute
+      - validation
+      command: [/kfp-launcher/launch, --mlmd_server_address, $(METADATA_GRPC_SERVICE_HOST),
+        --mlmd_server_port, $(METADATA_GRPC_SERVICE_PORT), --runtime_info_json, $(KFP_V2_RUNTIME_INFO),
+        --container_image, $(KFP_V2_IMAGE), --task_name, validation, --pipeline_name,
+        '{{inputs.parameters.pipeline-name}}', --run_id, $(KFP_RUN_ID), --run_resource,
+        workflows.argoproj.io/$(WORKFLOW_ID), --namespace, $(KFP_NAMESPACE), --pod_name,
+        $(KFP_POD_NAME), --pod_uid, $(KFP_POD_UID), --pipeline_root, '{{inputs.parameters.pipeline-root}}',
+        --enable_caching, $(ENABLE_CACHING), --, --]
+      env:
+      - name: KFP_POD_NAME
+        valueFrom:
+          fieldRef: {fieldPath: metadata.name}
+      - name: KFP_POD_UID
+        valueFrom:
+          fieldRef: {fieldPath: metadata.uid}
+      - name: KFP_NAMESPACE
+        valueFrom:
+          fieldRef: {fieldPath: metadata.namespace}
+      - name: WORKFLOW_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''workflows.argoproj.io/workflow'']'}
+      - name: KFP_RUN_ID
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipeline/runid'']'}
+      - name: ENABLE_CACHING
+        valueFrom:
+          fieldRef: {fieldPath: 'metadata.labels[''pipelines.kubeflow.org/enable_caching'']'}
+      - {name: KFP_V2_IMAGE, value: 'python:3.7'}
+      - {name: KFP_V2_RUNTIME_INFO, value: '{"inputParameters": {}, "inputArtifacts":
+          {"model_input": {"metadataPath": "/tmp/inputs/model_input/data", "schemaTitle":
+          "system.Model", "instanceSchema": "", "schemaVersion": "0.0.1"}, "test_dataset_input":
+          {"metadataPath": "/tmp/inputs/test_dataset_input/data", "schemaTitle": "system.Dataset",
+          "instanceSchema": "", "schemaVersion": "0.0.1"}}, "outputParameters": {"Output":
+          {"type": "STRING", "path": "/tmp/outputs/Output/data"}}, "outputArtifacts":
+          {}}'}
+      envFrom:
+      - configMapRef: {name: metadata-grpc-configmap, optional: true}
+      image: python:3.7
+      volumeMounts:
+      - {mountPath: /kfp-launcher, name: kfp-launcher}
+    inputs:
+      parameters:
+      - {name: pipeline-name}
+      - {name: pipeline-root}
+      artifacts:
+      - {name: train-model, path: /tmp/inputs/model_input/data}
+      - {name: data-transformation-test_dataset_output, path: /tmp/inputs/test_dataset_input/data}
+    outputs:
+      parameters:
+      - name: validation-Output
+        valueFrom: {path: /tmp/outputs/Output/data}
+      artifacts:
+      - {name: validation-Output, path: /tmp/outputs/Output/data}
     metadata:
       annotations:
         pipelines.kubeflow.org/v2_component: "true"
